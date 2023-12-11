@@ -94,4 +94,56 @@ data['dollar_volume_rank'] = (data.groupby('date')['dollar_volume'].rank(ascendi
 # filter by 150
 data = data[data['dollar_volume_rank']<150].drop(['dollar_volume', 'dollar_volume_rank'], axis=1)
 
-print(data)
+# Calculate monthly returns for different time horizons as features.
+def calculate_returns(df):
+    outlier_cutoff = 0.005
+    lags = [1, 2, 3, 6, 9, 12]
+    for lag in lags:
+        df[f'return_{lag}m'] = (df['adj close']
+                                .pct_change(lag)
+                                .pipe(lambda x: x.clip(lower=x.quantile(outlier_cutoff),
+                                                       upper=x.quantile(1-outlier_cutoff)))
+                                .add(1)
+                                .pow(1/lag)
+                                .sub(1))
+    return df
+
+data = data.groupby(level=1, group_keys=False).apply(calculate_returns).dropna()
+
+# Calculate Fama-French Factors and calculate Rolling factor betas
+factor_data = web.DataReader('F-F_Research_Data_5_Factors_2x3',
+                             'famafrench',
+                             start='2010')[0].drop('RF', axis=1)
+
+factor_data.index = factor_data.index.to_timestamp()
+factor_data = factor_data.resample('M').last().div(100)
+factor_data.index.name = 'date'
+factor_data = factor_data.join(data['return_1m']).sort_index()
+
+
+# Filter out by the 10 months
+observations = factor_data.groupby(level=1).size()
+valid_stocks = observations[observations >= 10]
+factor_data = factor_data[factor_data.index.get_level_values('ticker')].isin(valid_stocks.index)
+
+# Calculate the rolling factor betas
+betas = (factor_data.groupby(level=1,
+                            group_keys=False)
+        .apply(lambda x: RollingOLS(endog=x['return_1m'],
+                                    exog=sm.add_constant(x.drop('return_1m', axis=1)),
+                                    window=min(24, x.shape[0]),
+                                    min_nobs=len(x.columns)+1)
+        .fit(params_only=True)
+        .params
+        .drop('const', axis=1)))
+
+data = (data.join(betas.groupby('ticker').shift()))
+
+factors = ['Mkt-RF', 'SMB', 'HML', 'RMW', 'CMA']
+data = (data.join(betas.groupby('ticker').shift()))
+data.loc[:, factors] = data.groupby('ticker', group_keys=False)[factors].apply(lambda x: x.fillna(x.mean()))
+data = data.drop('adj close', axis=1)
+data = data.dropna()
+
+
+# fit a k-means clustering algoritm to group similar assets based on their features
