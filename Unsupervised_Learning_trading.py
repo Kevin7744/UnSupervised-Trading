@@ -1,6 +1,6 @@
 from statsmodels.regression.rolling import RollingOLS
 import pandas_datareader.data as web
-import matplotlib.pyplot as pyplot
+import matplotlib.pyplot as plt
 import statsmodels.api as sm
 import pandas as pd
 import numpy as np
@@ -181,7 +181,7 @@ fixed_dates
 
 # define the portofilio optimization function
 from pypfopt.efficient_frontier import efficient_frontier
-from pyofopt import risk_models
+from pypfopt import risk_models
 from pypfopt import expected_returns
 
 def optimize_weight(prices):
@@ -189,7 +189,7 @@ def optimize_weight(prices):
                                                       frequency=252)
     cov = risk_models.sample_cov(prices=prices,
                                  frequency=252)
-    ef = efficientFrontier(expected_returns=returns,
+    ef = efficient_frontier(expected_returns=returns,
                            cov_matrix=cov,
                            weight_bounds=(0, .1),
                            solver= 'SCS')
