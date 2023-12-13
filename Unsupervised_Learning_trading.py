@@ -14,14 +14,10 @@ warnings.filterwarnings('ignore')
 # packages to install
 # pip install statsmodels pandas_datareader yfinance pandas_ta
 
-
 # Read the S&P 500 stocks from wikipedia
 sp500 = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')[0]
 # # Clean the symbol column data 
-
 sp500['Symbol'] = sp500['Symbol'].str.replace('.', '-')
-
-sp500
 
 # # Grab all the stock in symbol column
 symbols_list = sp500['Symbol'].unique().tolist()
@@ -35,16 +31,12 @@ start_date = pd.to_datetime(end_date)-pd.DateOffset(365*8)
 df = yf.download(tickers=symbols_list, 
                  start = start_date,
                  end = end_date).stack()
-# it will take sometime to download
 
-
-# # after download
 # # change the index format
 df.index.names = ['date', 'ticker']
 
 # # fix the columns to lowercase
 df.columns = df.columns.str.lower()
-
 
 # # calculate the different features and indicator on each stock
 # # Garman-Klass volatility
@@ -68,18 +60,14 @@ def compute_atr(stock_data):
 
 df['atr'] = df.groupby(level=1, group_keys=False).apply(compute_atr)
 
-
 # #  Compute MACD
 def compute_macd(close):
     macd = pandas_ta.macd(close, length=20).iloc[:,0]
     return macd.sub(macd.mean()).div(macd.std())
 df['macd'] = df.groupby(level=1, group_keys=False)['adj close'].apply(compute_macd)
 
-
 # # calculate the dollar volume
 df['dollar_volume'] = (df['adj close'] * df['volume'])/1e6
-
-
 
 # # Aggregate to monthly level and filter top 150 most liquid stock for each month
 last_cols = [c for c in df.columns.unique(0) if c not in ['dollar_volume', 'volume', 'open', 'high', 'low', 'close']]
@@ -120,7 +108,6 @@ factor_data = factor_data.resample('M').last().div(100)
 factor_data.index.name = 'date'
 factor_data = factor_data.join(data['return_1m']).sort_index()
 
-
 # Filter out by the 10 months
 observations = factor_data.groupby(level=1).size()
 valid_stocks = observations[observations >= 10]
@@ -145,5 +132,72 @@ data.loc[:, factors] = data.groupby('ticker', group_keys=False)[factors].apply(l
 data = data.drop('adj close', axis=1)
 data = data.dropna()
 
-
 # fit a k-means clustering algoritm to group similar assets based on their features
+from sklearn import KMeans
+
+data = data.drop('cluster', axis=1)
+def get_clusters(df):
+    df['cluster'] = KMeans(n_clusters=4,
+                           random_state=0,
+                           init=initial_centroids).fit(df).labels_
+    return df
+
+data = data.dropna().groupby('date', group_keys=False).apply(get_clusters)
+
+def plot_clusters(data):
+    cluster_0 = data[data['cluster']==0]
+    cluster_0 = data[data['cluster']==1]
+    cluster_0 = data[data['cluster']==2]
+    cluster_0 = data[data['cluster']==3]
+
+    plt.scatter(cluster_0.iloc[:,0], cluster_0.iloc[:,6] , color = 'red', label ='cluster 0')
+    plt.scatter(cluster_0.iloc[:,0], cluster_0.iloc[:,6] , color = 'red', label ='cluster 0')
+    plt.scatter(cluster_0.iloc[:,0], cluster_0.iloc[:,6] , color = 'red', label ='cluster 0')
+    plt.scatter(cluster_0.iloc[:,0], cluster_0.iloc[:,6] , color = 'red', label ='cluster 0')
+    plt.legend()
+    plt.show()
+    return
+plt.style.use('ggplot')
+for i in data.index.get_level_values('date').unique().tolist():
+    g = data.xs(i, level=0)
+    plt.title(f'Date {i}')
+    plot_clusters(g)
+
+target_rsi_values = [30, 45, 55, 70]
+initial_centroids = np.zeros((len(target_rsi_values), 18))
+initial_centroids[:, 6] = target_rsi_values
+
+# For each month select assets based on the cluster and form a portfolio based on effecient frontier 
+# max sharpe ratio optimization
+filtered_df = data[data['cluster']==3].copy()
+filtered_df.index = filtered_df.reset_index(level=1)
+filtered_df.index = filtered_df.index+pd.DateOffset(1)
+filtered_df = filtered_df.reset_index().set_index(['date', 'ticker'])
+dates = filtered_df.index.get_level_values('date').unique().tolist()
+fixed_dates = {}
+for d in dates:
+    fixed_dates[d.strftime('%Y-%m-%d')] = filtered_df.xs(d, level=0).index.tolist()
+fixed_dates
+
+# define the portofilio optimization function
+from pypfopt.efficient_frontier import efficient_frontier
+from pyofopt import risk_models
+from pypfopt import expected_returns
+
+def optimize_weight(prices):
+    returns = expected_returns.mean_historical_return(price=prices, 
+                                                      frequency=252)
+    cov = risk_models.sample_cov(prices=prices,
+                                 frequency=252)
+    ef = efficientFrontier(expected_returns=returns,
+                           cov_matrix=cov,
+                           weight_bounds=(0, .1),
+                           solver= 'SCS')
+    weights = ef.max_sharpe()
+    return ef.clean_weights()
+
+# Download Fresh daily prices data only for short listed stocks.
+stocks = data.index.get_level_values('ticker').unique().tolist()
+new_df = yf.download(ticker=stocks,
+                     start=data.index.get_level_values('date').unique()[0]-pd.DateOffset(months=12),
+                     end=data.index.get_level_values('date').unique()[-1])
